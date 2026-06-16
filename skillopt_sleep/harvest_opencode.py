@@ -185,9 +185,6 @@ def harvest_opencode(
     since_ms = _iso_to_ms(since_iso)
     sql = "SELECT id FROM session WHERE COALESCE(time_updated, time_created, 0) >= ? ORDER BY time_updated DESC"
     params: list[Any] = [since_ms]
-    if limit and limit > 0:
-        sql += " LIMIT ?"
-        params.append(limit * 4)
 
     out: List[SessionDigest] = []
     try:

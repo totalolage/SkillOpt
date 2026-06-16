@@ -199,6 +199,11 @@ class TestHarvest(unittest.TestCase):
             conn.execute("INSERT INTO project VALUES (?, ?)", ("p1", "/repo/Yoshi"))
             conn.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?)", ("s1", "p1", "/repo/Yoshi", 1_800_000_000_000, 1_800_000_001_000))
             conn.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?)", ("s2", "p1", "/repo/Other", 1_800_000_002_000, 1_800_000_003_000))
+            for i in range(5):
+                conn.execute(
+                    "INSERT INTO session VALUES (?, ?, ?, ?, ?)",
+                    (f"newer{i}", "p1", "/repo/Other", 1_800_000_010_000 + i, 1_800_000_011_000 + i),
+                )
             conn.execute("INSERT INTO message VALUES (?, ?, ?, ?)", ("m1", "s1", 1, json.dumps({"role": "user"})))
             conn.execute("INSERT INTO message VALUES (?, ?, ?, ?)", ("m2", "s1", 2, json.dumps({"role": "assistant"})))
             parts = [
@@ -215,6 +220,7 @@ class TestHarvest(unittest.TestCase):
             conn.close()
 
             digests = harvest_opencode(db, scope="invoked", invoked_project="/repo/Yoshi", limit=10)
+            limited = harvest_opencode(db, scope="invoked", invoked_project="/repo/Yoshi", limit=1)
 
             Args = type("Args", (), {
                 "project": "/repo/Yoshi", "scope": "", "backend": "", "model": "",
@@ -226,6 +232,7 @@ class TestHarvest(unittest.TestCase):
             via_cfg = harvest_for_config(cfg, limit=10)
 
         self.assertEqual(len(digests), 1)
+        self.assertEqual([d.session_id for d in limited], ["s1"])
         self.assertEqual(len(via_cfg), 1)
         joined = "\n".join(digests[0].user_prompts + digests[0].assistant_finals)
         self.assertIn("[REDACTED_OPENAI_KEY]", joined)
