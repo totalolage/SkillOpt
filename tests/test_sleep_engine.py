@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
-from skillopt_sleep.backend import MockBackend, exact_score, keyword_soft_score
+from skillopt_sleep.backend import MockBackend, OpenCodeCliBackend, exact_score, get_backend, keyword_soft_score
 from skillopt_sleep.config import load_config
 from skillopt_sleep.consolidate import consolidate
 from skillopt_sleep.cycle import run_sleep_cycle
@@ -179,6 +181,83 @@ class TestHarvest(unittest.TestCase):
         self.assertEqual(len(digests), 1)
         self.assertEqual(digests[0].session_id, "rollout-yoshi")
         self.assertEqual(digests[0].user_prompts, ["fix Yoshi"])
+
+    def test_harvest_opencode_digest_sanitizes_and_keeps_metadata_only(self):
+        from skillopt_sleep.__main__ import _cfg_from_args
+        from skillopt_sleep.harvest_opencode import harvest_opencode
+        from skillopt_sleep.harvest_sources import harvest_for_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "opencode.db")
+            conn = sqlite3.connect(db)
+            conn.executescript(
+                "CREATE TABLE project(id TEXT PRIMARY KEY, worktree TEXT);"
+                "CREATE TABLE session(id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER);"
+                "CREATE TABLE message(id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);"
+                "CREATE TABLE part(id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);"
+            )
+            conn.execute("INSERT INTO project VALUES (?, ?)", ("p1", "/repo/Yoshi"))
+            conn.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?)", ("s1", "p1", "/repo/Yoshi", 1_800_000_000_000, 1_800_000_001_000))
+            conn.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?)", ("s2", "p1", "/repo/Other", 1_800_000_002_000, 1_800_000_003_000))
+            conn.execute("INSERT INTO message VALUES (?, ?, ?, ?)", ("m1", "s1", 1, json.dumps({"role": "user"})))
+            conn.execute("INSERT INTO message VALUES (?, ?, ?, ?)", ("m2", "s1", 2, json.dumps({"role": "assistant"})))
+            parts = [
+                ("pt1", "m1", "s1", 1, {"type": "text", "text": "fix parser with sk-1234567890abcdef and token local-secret"}),
+                ("pt2", "m2", "s1", 2, {"type": "tool", "tool": "edit", "state": {"input": {"path": "/do/not/copy/token-secret.txt"}}}),
+                ("pt3", "m2", "s1", 3, {"type": "patch", "files": ["skillopt_sleep/parser.py"], "text": "patch contents should not copy"}),
+                ("pt4", "m2", "s1", 4, {"type": "file", "filename": "notes.md", "source": {"path": "src/app.py", "text": "file contents should not copy"}}),
+                ("pt5", "m2", "s1", 5, {"type": "reasoning", "text": "private reasoning should not copy"}),
+                ("pt6", "m2", "s1", 6, {"type": "text", "text": "done"}),
+            ]
+            for row in parts:
+                conn.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?)", (row[0], row[1], row[2], row[3], json.dumps(row[4])))
+            conn.commit()
+            conn.close()
+
+            digests = harvest_opencode(db, scope="invoked", invoked_project="/repo/Yoshi", limit=10)
+
+            Args = type("Args", (), {
+                "project": "/repo/Yoshi", "scope": "", "backend": "", "model": "",
+                "codex_path": "", "opencode_path": "", "claude_home": "", "codex_home": "",
+                "opencode_db": db, "memory_path": "", "source": "opencode",
+                "lookback_hours": 0, "edit_budget": 0, "auto_adopt": False,
+            })
+            cfg = _cfg_from_args(Args())
+            via_cfg = harvest_for_config(cfg, limit=10)
+
+        self.assertEqual(len(digests), 1)
+        self.assertEqual(len(via_cfg), 1)
+        joined = "\n".join(digests[0].user_prompts + digests[0].assistant_finals)
+        self.assertIn("[REDACTED_OPENAI_KEY]", joined)
+        self.assertIn("token [REDACTED]", joined)
+        self.assertIn("edit", digests[0].tools_used)
+        self.assertIn("skillopt_sleep/parser.py", digests[0].files_touched)
+        self.assertIn("src/app.py", digests[0].files_touched)
+        self.assertNotIn("/do/not/copy", "\n".join(digests[0].files_touched))
+        self.assertNotIn("patch contents should not copy", joined)
+        self.assertNotIn("file contents should not copy", joined)
+        self.assertNotIn("private reasoning should not copy", joined)
+
+
+class TestOpenCodeBackend(unittest.TestCase):
+    def test_get_backend_and_run_command_are_isolated(self):
+        be = get_backend("opencode", model="test-model", opencode_path="/bin/opencode")
+        self.assertIsInstance(be, OpenCodeCliBackend)
+        with mock.patch("subprocess.run") as run:
+            run.return_value = type("Proc", (), {"stdout": "final answer"})()
+            out = be._call("hello")
+
+        self.assertEqual(out, "final answer")
+        cmd = run.call_args.args[0]
+        kwargs = run.call_args.kwargs
+        self.assertEqual(cmd[:4], ["/bin/opencode", "run", "--pure", "--format"])
+        self.assertIn("default", cmd)
+        self.assertIn("--dir", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("test-model", cmd)
+        self.assertEqual(cmd[-1], "hello")
+        self.assertEqual(kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
+        self.assertEqual(kwargs["env"]["OPENCODE_DISABLE_EXTERNAL_SKILLS"], "1")
 
 
 class TestMine(unittest.TestCase):
@@ -507,6 +586,39 @@ class TestFullCycleAndAdopt(unittest.TestCase):
             self.assertTrue(os.path.exists(live_skill))
             with open(live_skill) as f:
                 self.assertIn("answer", f.read().lower())
+
+    def test_opencode_cycle_targets_project_skill_not_claude_md(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj,
+                projects="invoked",
+                backend="mock",
+                transcript_source="opencode",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned",
+                auto_adopt=False,
+            )
+            tasks = assign_splits(researcher_persona(), holdout_fraction=0.34, seed=42)
+
+            outcome = run_sleep_cycle(cfg, seed_tasks=tasks)
+            live_skill = cfg.managed_skill_path(proj)
+
+            self.assertTrue(outcome.report.accepted)
+            self.assertEqual(
+                live_skill,
+                os.path.join(proj, ".opencode", "skills", "skillopt-sleep-learned", "SKILL.md"),
+            )
+            with open(os.path.join(outcome.staging_dir, "manifest.json"), encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest["live_skill_path"], live_skill)
+            self.assertFalse(manifest["has_memory"])
+            self.assertEqual(manifest["live_memory_path"], "")
+            self.assertFalse(os.path.exists(os.path.join(proj, "CLAUDE.md")))
+
+            updated = adopt(outcome.staging_dir)
+            self.assertEqual(updated, [live_skill])
+            self.assertTrue(os.path.exists(live_skill))
+            self.assertFalse(os.path.exists(os.path.join(proj, "CLAUDE.md")))
 
 
 if __name__ == "__main__":

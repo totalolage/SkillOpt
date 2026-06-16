@@ -1,7 +1,7 @@
 """SkillOpt-Sleep — Stage 5/6: staging and adoption.
 
 Implements the Dreams safety contract: the cycle never mutates the user's
-live CLAUDE.md / SKILL.md. It writes proposals + a human-readable report into
+live memory / skill files. It writes proposals + a human-readable report into
 a staging directory; a separate, explicit `adopt` step copies them over the
 live files after taking a backup.
 """

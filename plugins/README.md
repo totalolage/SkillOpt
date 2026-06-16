@@ -1,4 +1,4 @@
-# SkillOpt-Sleep — plugins for Claude Code, Codex, and Copilot
+# SkillOpt-Sleep — plugins for Claude Code, Codex, Copilot, and OpenCode
 
 **Your coding agent forgets everything between sessions. SkillOpt-Sleep fixes
 that.** While you sleep, it reviews what you did today, notices the rules you
@@ -8,7 +8,7 @@ only the rules that actually make it score better on *your own* past tasks. You
 wake up to an agent that's better at *your* work, and you approve every change
 before it sticks.
 
-One engine, three thin shells. It synthesizes **SkillOpt** (validation-gated
+One engine, four thin shells. It synthesizes **SkillOpt** (validation-gated
 bounded text optimization — the research in this repo), **Claude Dreams**
 (offline consolidation; input never mutated; review-then-adopt), and the **agent
 sleep** idea (short-term experience → long-term competence).
@@ -25,6 +25,7 @@ sleep** idea (short-term experience → long-term competence).
 | **Claude Code** | [`claude-code/`](claude-code) | `.claude-plugin` + `/skillopt-sleep` command + skill + hooks | full, installable |
 | **Codex** | [`codex/`](codex) | user-level `skillopt-sleep` skill + shared runner | full |
 | **Copilot** | [`copilot/`](copilot) | MCP server (`sleep_*` tools) + `copilot-instructions` | full (MCP) |
+| **OpenCode** | [`opencode/`](opencode) | user-level skill + MCP server + native SQLite harvest | full |
 
 ## Install (pick your agent)
 
@@ -33,11 +34,12 @@ sleep** idea (short-term experience → long-term competence).
 | **Claude Code** | `/plugin marketplace add microsoft/SkillOpt` → `/plugin install skillopt-sleep` | `/skillopt-sleep status` |
 | **Codex** | `git clone` → `bash plugins/codex/install.sh` | `/skillopt-sleep status` |
 | **Copilot** | `git clone` → register `plugins/copilot/mcp_server.py` as an MCP server | ask "run the sleep cycle" |
+| **OpenCode** | `git clone` → `bash plugins/opencode/install.sh` | ask "run sleep status" |
 
-Requirements: Python ≥ 3.10 and the agent's CLI on PATH. All three call the same
+Requirements: Python ≥ 3.10 and the agent's CLI on PATH. All four call the same
 [`run-sleep.sh`](run-sleep.sh) → `python -m skillopt_sleep`, so behaviour is
 identical everywhere. Default backend is `mock` (no API spend); `--backend
-claude|codex` uses your own budget.
+claude|codex|opencode` uses your own budget.
 
 ---
 
@@ -70,7 +72,7 @@ land in val or test — that invariant is unit-tested.
 
 ## What each feature does **for you** (with examples)
 
-Every control below works on all three platforms (pass it after the action,
+Every control below works on all four platforms (pass it after the action,
 e.g. `/skillopt-sleep run --rollouts-k 3`).
 
 ### `--preferences "..."` — tell it your house rules

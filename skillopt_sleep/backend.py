@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -651,6 +652,137 @@ class ClaudeCliBackend(CliBackend):
             except Exception:
                 pass
 
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text or "")
+
+
+def resolve_opencode_path(explicit: str = "") -> str:
+    if explicit:
+        return explicit
+    env = os.environ.get("SKILLOPT_SLEEP_OPENCODE_PATH")
+    if env:
+        return env
+    return shutil.which("opencode") or "opencode"
+
+
+class OpenCodeCliBackend(CliBackend):
+    """Drives the authenticated OpenCode CLI: `opencode run`."""
+
+    name = "opencode"
+
+    def __init__(self, model: str = "", opencode_path: str = "", timeout: int = 240) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_OPENCODE_MODEL", ""),
+                         timeout=timeout)
+        self.opencode_path = resolve_opencode_path(opencode_path)
+
+    def _isolated_env(self, root: str) -> Dict[str, str]:
+        env = os.environ.copy()
+        config_home = os.path.join(root, "config")
+        data_home = os.path.join(root, "data")
+        cache_home = os.path.join(root, "cache")
+        os.makedirs(config_home, exist_ok=True)
+        os.makedirs(cache_home, exist_ok=True)
+        os.makedirs(os.path.join(data_home, "opencode"), exist_ok=True)
+        for name, value in {
+            "XDG_CONFIG_HOME": config_home,
+            "XDG_DATA_HOME": data_home,
+            "XDG_CACHE_HOME": cache_home,
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
+            "OPENCODE_PURE": "1",
+        }.items():
+            env[name] = value
+        # Keep auth, drop everything else. Without this opencode cannot call the
+        # user's configured provider from the isolated temp data directory.
+        auth_src = os.path.expanduser("~/.local/share/opencode/auth.json")
+        auth_dst = os.path.join(data_home, "opencode", "auth.json")
+        if os.path.exists(auth_src) and not os.path.exists(auth_dst):
+            try:
+                shutil.copy2(auth_src, auth_dst)
+            except Exception:
+                pass
+        return env
+
+    def _run_opencode(self, prompt: str, workdir: str, *, allow_bash: bool = False) -> str:
+        import tempfile
+
+        root = tempfile.mkdtemp(prefix="skillopt_sleep_opencode_")
+        cmd = [
+            self.opencode_path, "run", "--pure", "--format", "default",
+            "--dir", workdir, "--title", "SkillOpt-Sleep replay",
+        ]
+        if self.model:
+            cmd += ["--model", self.model]
+        if allow_bash:
+            # Only used with shims inside a throwaway temp directory for tool-call
+            # judges. Plain replay never skips permissions.
+            cmd.append("--dangerously-skip-permissions")
+        cmd.append(prompt)
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=workdir,
+                env=self._isolated_env(root),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            )
+            return _strip_ansi(proc.stdout).strip()
+        except Exception:
+            return ""
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        import tempfile
+
+        work = tempfile.mkdtemp(prefix="skillopt_sleep_opencode_work_")
+        try:
+            return self._run_opencode(prompt, work)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def attempt_with_tools(self, task, skill, memory, tools):
+        import stat
+        import tempfile
+
+        work = tempfile.mkdtemp(prefix="skillopt_sleep_opencodetools_")
+        calllog = os.path.join(work, "_tool_calls.log")
+        try:
+            for tname in (tools or ["search"]):
+                shim = os.path.join(work, tname)
+                with open(shim, "w", encoding="utf-8") as f:
+                    f.write(
+                        "#!/usr/bin/env bash\n"
+                        f'echo "{tname}" >> "{calllog}"\n'
+                        'echo "(search results: 3 relevant notes found; use them to answer)"\n'
+                    )
+                os.chmod(shim, os.stat(shim).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            tool_hint = (
+                "Shell tools are available in the working directory: "
+                + ", ".join(f"./{t}" for t in (tools or ["search"]))
+                + ". When the skill says to look something up or search before "
+                "answering, you MUST actually run the tool before giving your final answer."
+            )
+            prompt = (
+                "Complete the task. Apply the skill and memory rules exactly.\n\n"
+                f"{tool_hint}\n\n# Skill\n{skill or '(none)'}\n\n# Memory\n{memory or '(none)'}\n\n"
+                f"# Task\n{task.intent}\n\n{task.context_excerpt}\n\nReturn ONLY the final answer."
+            )
+            resp = self._run_opencode(prompt, work, allow_bash=True)
+            self._tokens += len(prompt) // 4 + len(resp) // 4
+            called: List[str] = []
+            if os.path.exists(calllog):
+                with open(calllog, encoding="utf-8") as f:
+                    logged = {ln.strip() for ln in f if ln.strip()}
+                called = [t for t in (tools or ["search"]) if t in logged]
+            return resp, called
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
 def resolve_codex_path(explicit: str = "") -> str:
     """Find the REAL `@openai/codex` binary, skipping the hermes wrapper.
 
@@ -1024,6 +1156,7 @@ def get_backend(
     model: str = "",
     claude_path: str = "claude",
     codex_path: str = "",
+    opencode_path: str = "",
     azure_endpoint: str = "",
 ) -> Backend:
     n = (name or "mock").strip().lower()
@@ -1031,6 +1164,8 @@ def get_backend(
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
         return CodexCliBackend(model=model, codex_path=codex_path)
+    if n in {"opencode", "opencode_cli", "open_code"}:
+        return OpenCodeCliBackend(model=model, opencode_path=opencode_path)
     if n in {"azure", "azure_openai", "aoai"}:
         return AzureOpenAIBackend(deployment=model, endpoint=azure_endpoint)
     if n in {"azure-responses", "azure_responses", "aoai-responses", "responses"}:
@@ -1048,6 +1183,7 @@ def build_backend(
     target_backend: str = "",
     target_model: str = "",
     codex_path: str = "",
+    opencode_path: str = "",
     azure_endpoint: str = "",
     preferences: str = "",
 ) -> Backend:
@@ -1060,13 +1196,18 @@ def build_backend(
     """
     has_split = any([optimizer_backend, optimizer_model, target_backend, target_model])
     if not has_split:
-        be = get_backend(backend, model=model, codex_path=codex_path, azure_endpoint=azure_endpoint)
+        be = get_backend(
+            backend, model=model, codex_path=codex_path,
+            opencode_path=opencode_path, azure_endpoint=azure_endpoint,
+        )
         be.preferences = preferences
         return be
     tgt = get_backend(target_backend or backend, model=target_model or model,
-                      codex_path=codex_path, azure_endpoint=azure_endpoint)
+                      codex_path=codex_path, opencode_path=opencode_path,
+                      azure_endpoint=azure_endpoint)
     opt = get_backend(optimizer_backend or backend, model=optimizer_model or model,
-                      codex_path=codex_path, azure_endpoint=azure_endpoint)
+                      codex_path=codex_path, opencode_path=opencode_path,
+                      azure_endpoint=azure_endpoint)
     opt.preferences = preferences  # reflect runs on the optimizer
     dual = DualBackend(target=tgt, optimizer=opt)
     dual.preferences = preferences

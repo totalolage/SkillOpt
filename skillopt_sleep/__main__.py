@@ -9,8 +9,8 @@
 Common flags:
     --project PATH      project to evolve (default: cwd)
     --scope all|invoked harvest scope (default: invoked)
-    --backend mock|claude|codex
-    --source claude|codex|auto
+    --backend mock|claude|codex|opencode
+    --source claude|codex|opencode|auto
     --model NAME
     --lookback-hours N
     --auto-adopt
@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from typing import Any, Dict
 
@@ -36,12 +37,15 @@ from skillopt_sleep.state import SleepState
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
-    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex"])
+    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex", "opencode"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
+    p.add_argument("--opencode-path", default="", help="path to the opencode binary")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
     p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
-    p.add_argument("--source", default="", choices=["", "claude", "codex", "auto"],
+    p.add_argument("--opencode-db", default="", help="path to OpenCode opencode.db")
+    p.add_argument("--memory-path", default="", help="optional live memory doc to evolve")
+    p.add_argument("--source", default="", choices=["", "claude", "codex", "opencode", "auto"],
                    help="session transcript source")
     p.add_argument("--lookback-hours", type=int, default=0)
     p.add_argument("--edit-budget", type=int, default=0)
@@ -62,12 +66,21 @@ def _cfg_from_args(args) -> Any:
         overrides["model"] = args.model
     if getattr(args, "codex_path", ""):
         overrides["codex_path"] = os.path.abspath(args.codex_path)
+    if getattr(args, "opencode_path", ""):
+        path = args.opencode_path
+        overrides["opencode_path"] = os.path.abspath(path) if os.path.sep in path else path
     if getattr(args, "claude_home", ""):
         overrides["claude_home"] = os.path.abspath(args.claude_home)
     if getattr(args, "codex_home", ""):
         overrides["codex_home"] = os.path.abspath(args.codex_home)
+    if getattr(args, "opencode_db", ""):
+        overrides["opencode_db"] = os.path.abspath(os.path.expanduser(args.opencode_db))
+    if getattr(args, "memory_path", ""):
+        overrides["memory_path"] = os.path.abspath(os.path.expanduser(args.memory_path))
     if getattr(args, "source", ""):
         overrides["transcript_source"] = args.source
+        if args.source == "opencode":
+            overrides["target_platform"] = "opencode"
     if getattr(args, "lookback_hours", 0):
         overrides["lookback_hours"] = args.lookback_hours
     if getattr(args, "edit_budget", 0):
@@ -171,9 +184,23 @@ def cmd_schedule(args) -> int:
     from skillopt_sleep.scheduler import schedule, list_scheduled
     cfg = _cfg_from_args(args)
     project = cfg.get("invoked_project") or os.getcwd()
+    extra_parts = []
+    for flag, value in (
+        ("--source", getattr(args, "source", "")),
+        ("--model", getattr(args, "model", "")),
+        ("--codex-path", getattr(args, "codex_path", "")),
+        ("--codex-home", getattr(args, "codex_home", "")),
+        ("--opencode-path", getattr(args, "opencode_path", "")),
+        ("--opencode-db", getattr(args, "opencode_db", "")),
+        ("--memory-path", getattr(args, "memory_path", "")),
+    ):
+        if value:
+            extra_parts.extend([flag, shlex.quote(str(value))])
+    if getattr(args, "auto_adopt", False):
+        extra_parts.append("--auto-adopt")
     ok, msg = schedule(project, backend=cfg.get("backend", "mock"),
                        hour=args.hour, minute=args.minute,
-                       extra=("--auto-adopt" if getattr(args, "auto_adopt", False) else ""))
+                       extra=" ".join(extra_parts))
     print("[sleep] " + msg)
     cur = list_scheduled()
     if cur:

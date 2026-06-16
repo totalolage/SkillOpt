@@ -34,7 +34,7 @@ class CycleOutcome:
 
 
 def _project_paths(cfg: SleepConfig) -> str:
-    """Where live CLAUDE.md lives + which project we are evolving."""
+    """Which project we are evolving."""
     if cfg.get("projects") == "invoked" and cfg.get("invoked_project"):
         return cfg.get("invoked_project")
     # default: the invoked cwd
@@ -54,7 +54,7 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         f"# SkillOpt-Sleep — night {report.night} report",
         "",
         f"- project: `{report.project}`",
-        f"- backend: `{cfg.get('backend')}`  replay: `{cfg.get('replay_mode')}`",
+        f"- backend: `{cfg.get('backend')}`  source: `{cfg.get('transcript_source')}`  replay: `{cfg.get('replay_mode')}`",
         f"- sessions harvested: {report.n_sessions}",
         f"- tasks mined: {report.n_tasks}  (replayed: {report.n_replayed})",
         f"- held-out score: {report.baseline_score:.3f} -> {report.candidate_score:.3f}",
@@ -77,8 +77,15 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         for n in report.notes:
             lines.append(f"- {n}")
         lines.append("")
-    lines.append("_Review, then run `/sleep adopt` to apply, or discard this folder._")
+    lines.append("_Review, then run `python -m skillopt_sleep adopt` to apply, or discard this folder._")
     return "\n".join(lines)
+
+
+def _target_platform(cfg: SleepConfig) -> str:
+    explicit = (cfg.get("target_platform", "") or "").strip().lower()
+    if explicit:
+        return explicit
+    return "opencode" if cfg.get("transcript_source") == "opencode" else "claude"
 
 
 def run_sleep_cycle(
@@ -108,6 +115,7 @@ def run_sleep_cycle(
         cfg.get("backend", "mock"),
         model=cfg.get("model", ""),
         codex_path=cfg.get("codex_path", ""),
+        opencode_path=cfg.get("opencode_path", ""),
     )
 
     # ── 1+2. harvest + mine (unless seed_tasks injected) ─────────────────
@@ -142,14 +150,24 @@ def run_sleep_cycle(
         )
 
     # ── live skill/memory docs ───────────────────────────────────────────
-    live_memory_path = os.path.join(project, "CLAUDE.md")
-    live_skill_path = cfg.managed_skill_path()
+    platform = _target_platform(cfg)
+    explicit_memory = cfg.get("memory_path", "") or ""
+    if explicit_memory:
+        live_memory_path = os.path.abspath(os.path.expanduser(explicit_memory))
+    elif platform == "opencode":
+        live_memory_path = ""
+    else:
+        live_memory_path = os.path.join(project, "CLAUDE.md")
+    live_skill_path = cfg.managed_skill_path(project if platform == "opencode" else "")
     skill = _read(live_skill_path)
-    memory = _read(live_memory_path)
+    memory = _read(live_memory_path) if live_memory_path else ""
     if not skill:
+        description = "Preferences and procedures learned from past OpenCode sessions."
+        if platform != "opencode":
+            description = "Preferences and procedures learned from past local agent sessions."
         skill = ensure_skill_scaffold(
             "", name=cfg.get("managed_skill_name", "skillopt-sleep-learned"),
-            description="Preferences and procedures learned from past local agent sessions.",
+            description=description,
         )
 
     report = SleepReport(
@@ -176,6 +194,7 @@ def run_sleep_cycle(
     history_tasks = []
     if recall_k > 0:
         history_tasks = [TaskRecord.from_dict(d) for d in state.task_archive()]
+    evolve_memory = bool(live_memory_path) and bool(cfg.get("evolve_memory", True))
     result = dream_consolidate(
         backend, tasks, skill, memory,
         history_tasks=history_tasks,
@@ -187,7 +206,7 @@ def run_sleep_cycle(
         gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
         gate_mode=cfg.get("gate_mode", "on"),
         evolve_skill=cfg.get("evolve_skill", True),
-        evolve_memory=cfg.get("evolve_memory", True),
+        evolve_memory=evolve_memory,
         night=night,
     )
     # archive tonight's real (non-dream) tasks so future nights can recall them
@@ -210,7 +229,7 @@ def run_sleep_cycle(
     if not dry_run:
         report_md = _render_report_md(report, cfg)
         proposed_skill = result.new_skill if (cfg.get("evolve_skill") and result.accepted) else None
-        proposed_memory = result.new_memory if (cfg.get("evolve_memory") and result.accepted) else None
+        proposed_memory = result.new_memory if (evolve_memory and result.accepted) else None
         staging_dir = write_staging(
             project,
             report=report,

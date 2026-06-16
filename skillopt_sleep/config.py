@@ -19,13 +19,15 @@ from typing import Any, Dict, Optional
 HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
+OPENCODE_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 
 
 DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
     "codex_home": CODEX_HOME,
-    "transcript_source": "claude",  # "claude" | "codex" | "auto"
+    "opencode_db": OPENCODE_DB,
+    "transcript_source": "claude",  # "claude" | "codex" | "opencode" | "auto"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -36,10 +38,11 @@ DEFAULTS: Dict[str, Any] = {
     "val_fraction": 0.34,         # real tasks reserved to gate updates
     "test_fraction": 0.0,         # real tasks reserved as the final held-out measure
     # ── optimizer ──────────────────────────────────────────────────────────
-    "backend": "mock",            # "mock" | "claude" | "codex"
+    "backend": "mock",            # "mock" | "claude" | "codex" | "opencode"
     "model": "",                  # backend-specific; "" => backend default
     "gate_mode": "on",            # "on" (validation-gated) | "off" (greedy, no hard filter)
     "codex_path": "",             # "" => auto-detect the real @openai/codex binary
+    "opencode_path": "",          # "" => find opencode on PATH
     "edit_budget": 4,             # textual learning rate (max edits/night)
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
     "gate_mixed_weight": 0.5,
@@ -54,6 +57,8 @@ DEFAULTS: Dict[str, Any] = {
     # ── adoption / safety ──────────────────────────────────────────────────
     "auto_adopt": False,          # default: stage + require explicit `adopt`
     "managed_skill_name": "skillopt-sleep-learned",
+    "memory_path": "",            # optional override; OpenCode defaults to skill-only
+    "target_platform": "",         # "" => infer from transcript_source
     "redact_secrets": True,
     "seed": 42,
 }
@@ -105,6 +110,10 @@ class SleepConfig:
         return os.path.join(self.data["codex_home"], "archived_sessions")
 
     @property
+    def opencode_db_path(self) -> str:
+        return os.path.abspath(os.path.expanduser(self.data.get("opencode_db") or OPENCODE_DB))
+
+    @property
     def history_path(self) -> str:
         return os.path.join(self.data["claude_home"], "history.jsonl")
 
@@ -112,7 +121,14 @@ class SleepConfig:
     def skills_dir(self) -> str:
         return os.path.join(self.data["claude_home"], "skills")
 
-    def managed_skill_path(self) -> str:
+    def managed_skill_path(self, project: str = "") -> str:
+        platform = (self.data.get("target_platform") or "").strip().lower()
+        if not platform and self.data.get("transcript_source") == "opencode":
+            platform = "opencode"
+        if platform == "opencode" and project:
+            return os.path.join(
+                project, ".opencode", "skills", self.data["managed_skill_name"], "SKILL.md"
+            )
         return os.path.join(
             self.skills_dir, self.data["managed_skill_name"], "SKILL.md"
         )

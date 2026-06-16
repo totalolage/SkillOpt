@@ -35,7 +35,7 @@ TOOLS = [
     {"name": "sleep_run", "action": "run",
      "description": "Run a full sleep cycle; stages a reviewed proposal. Nothing live changes until adopt."},
     {"name": "sleep_adopt", "action": "adopt",
-     "description": "Apply the latest staged proposal to CLAUDE.md/SKILL.md (backs up first)."},
+     "description": "Apply the latest staged proposal to the configured memory/skill files (backs up first)."},
     {"name": "sleep_harvest", "action": "harvest",
      "description": "Debug: list the recurring tasks mined from recent sessions."},
 ]
@@ -45,9 +45,17 @@ _TOOL_SCHEMA = {
     "type": "object",
     "properties": {
         "project": {"type": "string", "description": "Project dir to evolve (default: cwd)."},
-        "backend": {"type": "string", "enum": ["mock", "claude", "codex"],
-                     "description": "mock = no API spend (default); claude/codex = real."},
+        "backend": {"type": "string", "enum": ["mock", "claude", "codex", "opencode"],
+                     "description": "mock = no API spend (default); claude/codex/opencode = real."},
+        "source": {"type": "string", "enum": ["claude", "codex", "opencode", "auto"],
+                   "description": "Session transcript source."},
         "scope": {"type": "string", "enum": ["invoked", "all"]},
+        "model": {"type": "string", "description": "Backend model name."},
+        "codex_path": {"type": "string", "description": "Path to the Codex CLI."},
+        "codex_home": {"type": "string", "description": "Path to the Codex home directory."},
+        "opencode_path": {"type": "string", "description": "Path to the OpenCode CLI."},
+        "opencode_db": {"type": "string", "description": "Path to OpenCode opencode.db."},
+        "memory_path": {"type": "string", "description": "Optional live memory document to evolve."},
     },
     "additionalProperties": False,
 }
@@ -62,6 +70,20 @@ def _run_engine(action: str, args: dict) -> str:
         cmd += ["--backend", str(args["backend"])]
     if args.get("scope"):
         cmd += ["--scope", str(args["scope"])]
+    if args.get("source"):
+        cmd += ["--source", str(args["source"])]
+    if args.get("model"):
+        cmd += ["--model", str(args["model"])]
+    if args.get("codex_path"):
+        cmd += ["--codex-path", str(args["codex_path"])]
+    if args.get("codex_home"):
+        cmd += ["--codex-home", str(args["codex_home"])]
+    if args.get("opencode_path"):
+        cmd += ["--opencode-path", str(args["opencode_path"])]
+    if args.get("opencode_db"):
+        cmd += ["--opencode-db", str(args["opencode_db"])]
+    if args.get("memory_path"):
+        cmd += ["--memory-path", str(args["memory_path"])]
     try:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=3600)
     except Exception as e:  # noqa: BLE001
