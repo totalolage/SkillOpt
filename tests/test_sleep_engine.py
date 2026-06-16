@@ -265,6 +265,7 @@ class TestOpenCodeBackend(unittest.TestCase):
         self.assertEqual(cmd[-1], "hello")
         self.assertEqual(kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
         self.assertEqual(kwargs["env"]["OPENCODE_DISABLE_EXTERNAL_SKILLS"], "1")
+        self.assertNotIn("OPENCODE_DISABLE_DEFAULT_PLUGINS", kwargs["env"])
 
 
 class TestMine(unittest.TestCase):

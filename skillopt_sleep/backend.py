@@ -678,32 +678,19 @@ class OpenCodeCliBackend(CliBackend):
 
     def _isolated_env(self, root: str) -> Dict[str, str]:
         env = os.environ.copy()
-        config_home = os.path.join(root, "config")
-        data_home = os.path.join(root, "data")
         cache_home = os.path.join(root, "cache")
-        os.makedirs(config_home, exist_ok=True)
         os.makedirs(cache_home, exist_ok=True)
-        os.makedirs(os.path.join(data_home, "opencode"), exist_ok=True)
         for name, value in {
-            "XDG_CONFIG_HOME": config_home,
-            "XDG_DATA_HOME": data_home,
+            # Keep global OpenCode config/data and default provider plugins for
+            # auth/model lookup; disable project config and external skills so
+            # the gate cannot see the project skill it is evaluating.
             "XDG_CACHE_HOME": cache_home,
             "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
             "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
             "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
             "OPENCODE_PURE": "1",
         }.items():
             env[name] = value
-        # Keep auth, drop everything else. Without this opencode cannot call the
-        # user's configured provider from the isolated temp data directory.
-        auth_src = os.path.expanduser("~/.local/share/opencode/auth.json")
-        auth_dst = os.path.join(data_home, "opencode", "auth.json")
-        if os.path.exists(auth_src) and not os.path.exists(auth_dst):
-            try:
-                shutil.copy2(auth_src, auth_dst)
-            except Exception:
-                pass
         return env
 
     def _run_opencode(self, prompt: str, workdir: str, *, allow_bash: bool = False) -> str:
