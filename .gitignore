@@ -21,6 +21,7 @@ data/*
 !data/alfworld_path_split/**
 outputs/
 logs/
+.skillopt-sleep/
 external/
 
 /BabyVision/
